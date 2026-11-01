@@ -26,7 +26,7 @@ import { readFileSync } from "node:fs"
 import { homedir as osHomedir } from "node:os"
 import { join } from "node:path"
 
-const ID = "agnes"
+const ID = "agnes-code"
 
 // 云端地址（2026-11-01 实测）。
 const CHAT_GATEWAY_BASE = "https://api-agnes-code.agnes-ai.com/v1"
