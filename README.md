@@ -6,7 +6,7 @@
 
 两种方式（登录时二选一）：
 
-1. **读取 Agnes Code 桌面端登录态（推荐）**——本机装有 Agnes Code 桌面版并登录过即可。插件按 Chrome 同款方案解出会话（`Local State` 的 DPAPI 包裹 AES 主密钥 → 解 `code-auth-session.v1` 的 AES-256-GCM），只在本机、当前 Windows 用户下可解，凭据不外传：
+1. **读取 Agnes Code 桌面端登录态（推荐）**——本机装有 Agnes Code 桌面版并登录过即可，不用填任何东西。没装/没登录时这一步会给出 [Agnes Code 官网页](https://agnes-ai.com/agnescode) 链接并自动等待：装好登录后自动完成，不用回来点按钮。插件按 Chrome 同款方案解出会话（`Local State` 的 DPAPI 包裹 AES 主密钥 → 解 `code-auth-session.v1` 的 AES-256-GCM），只在本机、当前 Windows 用户下可解，凭据不外传：
    - Windows：`%APPDATA%\AgnesCode\`；macOS：`~/Library/Application Support/AgnesCode/`（仅粘贴方式）；Linux：`~/.config/AgnesCode/`（仅粘贴方式）。
    - 会话 JWT 过期会提示打开 Agnes Code 重新登录后重试（桌面端负责续期）。
 2. **粘贴 accessToken**——从桌面端会话里复制 JWT（`eyJ…`）；可选填用户名便于区分账号。
@@ -15,7 +15,7 @@
 
 ## 模型
 
-供应商 id `agnes`。目录**按账号实时拉取**（`GET /v1/models`，读取不计费）。2026-11 实测目录：
+供应商 id `agnes-code`。目录**按账号实时拉取**（`GET /v1/models`，读取不计费）。2026-11 实测目录：
 
 | modelId | context | 备注 |
 | --- | --- | --- |
@@ -55,8 +55,8 @@
 
 ```
 magpie plugin add ./Agnes-Code
-magpie plugin login agnes                   # 选「读取 Agnes Code 桌面端登录态」
-magpie provider test agnes agnes-3.0-flash
+magpie plugin login agnes-code              # 选「读取 Agnes Code 桌面端登录态」
+magpie provider test agnes-code agnes-3.0-flash
 ```
 
 测试（零依赖，Node ≥18 或 Bun）：

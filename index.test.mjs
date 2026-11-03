@@ -12,6 +12,8 @@ const {
   decryptSessionWithKey,
   readDesktopCredential,
   isExpiredJwt,
+  OFFICIAL_SITE,
+  DESKTOP_WAIT_MS,
   CHAT_GATEWAY_BASE,
   MODELS_URL,
   ID,
@@ -97,11 +99,12 @@ test("readDesktopCredential decrypts the desktop session and reports the usernam
   const keyBlob = Buffer.concat([Buffer.from("DPAPI", "latin1"), key])
   const session = { accessToken: "jwt.def", userInfo: { username: "jy960815", id: "uuid-1" }, bffPublicBaseUrl: "https://x/v1" }
   const cred = await readDesktopCredential({
-    platform: "linux",
+    platform: "win32",
+    env: { APPDATA: "/w/Roaming" },
     homedir: "/home/t",
     readFileImpl: fixtureFs({
-      [pjoin("/home/t", ".config", "AgnesCode", "Local State")]: Buffer.from(JSON.stringify({ os_crypt: { encrypted_key: keyBlob.toString("base64") } })),
-      [pjoin("/home/t", ".config", "AgnesCode", "code-auth-session.v1")]: frame(key, session),
+      [pjoin("/w/Roaming", "AgnesCode", "Local State")]: Buffer.from(JSON.stringify({ os_crypt: { encrypted_key: keyBlob.toString("base64") } })),
+      [pjoin("/w/Roaming", "AgnesCode", "code-auth-session.v1")]: frame(key, session),
     }),
     dpapiImpl: async (blob) => blob,
   })
@@ -117,11 +120,12 @@ test("readDesktopCredential rejects expired logins with an actionable message", 
   const expired = `h.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) - 100 })).toString("base64url")}.s`
   await assert.rejects(
     readDesktopCredential({
-      platform: "linux",
+      platform: "win32",
+      env: { APPDATA: "/w/Roaming" },
       homedir: "/home/t",
       readFileImpl: fixtureFs({
-        [pjoin("/home/t", ".config", "AgnesCode", "Local State")]: Buffer.from(JSON.stringify({ os_crypt: { encrypted_key: keyBlob.toString("base64") } })),
-        [pjoin("/home/t", ".config", "AgnesCode", "code-auth-session.v1")]: frame(key, { accessToken: expired, userInfo: { username: "x" }, bffPublicBaseUrl: "https://x/v1" }),
+        [pjoin("/w/Roaming", "AgnesCode", "Local State")]: Buffer.from(JSON.stringify({ os_crypt: { encrypted_key: keyBlob.toString("base64") } })),
+        [pjoin("/w/Roaming", "AgnesCode", "code-auth-session.v1")]: frame(key, { accessToken: expired, userInfo: { username: "x" }, bffPublicBaseUrl: "https://x/v1" }),
       }),
       dpapiImpl: async (blob) => blob,
     }),
@@ -131,9 +135,141 @@ test("readDesktopCredential rejects expired logins with an actionable message", 
 
 test("readDesktopCredential lists what it could not read", async () => {
   await assert.rejects(
-    readDesktopCredential({ platform: "linux", homedir: "/home/t", readFileImpl: fixtureFs({}) }),
+    readDesktopCredential({ platform: "win32", env: { APPDATA: "/w/Roaming" }, homedir: "/home/t", readFileImpl: fixtureFs({}) }),
     (e) => /未找到 Agnes Code 桌面端登录态/.test(e.message) && /AgnesCode/.test(e.message),
   )
+})
+
+test("readDesktopCredential refuses non-Windows with a clear pointer before touching disk", async () => {
+  let reads = 0
+  await assert.rejects(
+    readDesktopCredential({
+      platform: "darwin",
+      homedir: "/home/t",
+      readFileImpl: () => {
+        reads += 1
+        return Buffer.from("{}")
+      },
+    }),
+    /仅支持 Windows/,
+  )
+  assert.equal(reads, 0)
+})
+
+test("paste login method stores the access token and optional username", async () => {
+  const plugin = createPlugin()
+  const method = plugin.auth.methods[1]
+  assert.match(method.label, /粘贴/)
+  const out = await method.authorize({ accessToken: "jwt.paste", username: "u9" })
+  assert.deepEqual(out, {
+    type: "success",
+    key: "jwt.paste",
+    accountId: "u9",
+    metadata: { username: "u9", source: "paste", method: "paste" },
+  })
+
+  const bare = await method.authorize({ accessToken: "jwt.paste" })
+  assert.equal(bare.type, "success")
+  assert.equal(bare.metadata.username, undefined)
+
+  const missing = await method.authorize({ username: "u9" })
+  assert.equal(missing.type, "failed")
+  assert.match(missing.error, /必填/)
+})
+
+const WIN_ENV = { APPDATA: "D:/AgnesTest" }
+
+function winFiles(key, session) {
+  const keyBlob = Buffer.concat([Buffer.from("DPAPI", "latin1"), key])
+  return {
+    [pjoin(WIN_ENV.APPDATA, "AgnesCode", "Local State")]: Buffer.from(
+      JSON.stringify({ os_crypt: { encrypted_key: keyBlob.toString("base64") } }),
+    ),
+    [pjoin(WIN_ENV.APPDATA, "AgnesCode", "code-auth-session.v1")]: frame(key, session),
+  }
+}
+
+test("desktop login method is oauth, so magpie shows no key input box", async () => {
+  const plugin = await AgnesPlugin()
+  // type:"api" 在 magpie 里就是一个 key 输入框 —— 本方法自己解磁盘，不该要用户输入。
+  assert.equal(plugin.auth.methods[0].type, "oauth")
+  assert.equal(plugin.auth.methods[0].prompts, undefined)
+})
+
+test("desktop login method decrypts the session and finishes right away", async () => {
+  const key = randomBytes(32)
+  const plugin = createPlugin({
+    platform: "win32",
+    env: WIN_ENV,
+    dpapiImpl: async (blob) => blob,
+    readFileImpl: fixtureFs(winFiles(key, { accessToken: "jwt.desk", userInfo: { username: "tester", id: "uuid-1" } })),
+  })
+  const out = await plugin.auth.methods[0].authorize()
+  assert.equal(out.url, "")
+  assert.match(out.instructions, /已读取本机 Agnes Code 登录态（tester）/)
+  const result = await out.callback()
+  assert.equal(result.type, "success")
+  assert.equal(result.key, "jwt.desk")
+  assert.equal(result.accountId, "tester")
+  assert.equal(result.metadata.username, "tester")
+  assert.match(result.metadata.source, /code-auth-session\.v1$/)
+})
+
+test("desktop login method points at the official site and waits when the session is missing", async () => {
+  let clock = 0
+  const slept = []
+  const plugin = createPlugin({
+    platform: "win32",
+    env: WIN_ENV,
+    dpapiImpl: async (blob) => blob,
+    readFileImpl: fixtureFs({}),
+    sleepImpl: async (ms) => {
+      slept.push(ms)
+      clock += ms
+    },
+    nowMsImpl: () => clock,
+  })
+  const out = await plugin.auth.methods[0].authorize()
+  assert.equal(out.url, OFFICIAL_SITE)
+  assert.equal(out.method, "auto")
+  assert.match(out.instructions, /没有读到 Agnes Code 桌面端登录态/)
+  // 等不到就是 failed，并告诉他登录后重试
+  const failed = await out.callback()
+  assert.equal(failed.type, "failed")
+  assert.match(failed.error, /重新点一次/)
+  // 轮询被 DESKTOP_WAIT_MS 封顶，不会无限等下去
+  assert.equal(slept.length, DESKTOP_WAIT_MS / 2000)
+})
+
+test("desktop login method completes on its own once the desktop logs in", async () => {
+  const key = randomBytes(32)
+  const base = fixtureFs(winFiles(key, { accessToken: "jwt.late", userInfo: { username: "late" } }))
+  const sessionPath = pjoin(WIN_ENV.APPDATA, "AgnesCode", "code-auth-session.v1")
+  let sessionReads = 0
+  const plugin = createPlugin({
+    platform: "win32",
+    env: WIN_ENV,
+    dpapiImpl: async (blob) => blob,
+    sleepImpl: async () => {},
+    readFileImpl: (path) => {
+      if (pjoin(path) === pjoin(sessionPath)) {
+        sessionReads += 1
+        if (sessionReads < 3) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+      }
+      return base(path)
+    },
+  })
+  const out = await plugin.auth.methods[0].authorize()
+  assert.equal(out.url, OFFICIAL_SITE)
+  assert.equal((await out.callback()).key, "jwt.late")
+  assert.equal(sessionReads, 3)
+})
+
+test("desktop login method refuses to poll on non-Windows", async () => {
+  const plugin = createPlugin({ platform: "linux", homedir: "/home/t", readFileImpl: fixtureFs({}) })
+  const out = await plugin.auth.methods[0].authorize()
+  assert.equal(out.type, "failed")
+  assert.match(out.error, /粘贴 accessToken/)
 })
 
 test("config hook declares the chat-completions provider without clobbering user config", async () => {
@@ -225,9 +361,11 @@ test("check-in observes the balance delta around the session touch", async () =>
   const out = await claimed.auth.checkin(async () => ({ type: "api", key: "k" }))
   assert.deepEqual(out, { outcome: "claimed", credit: 600, message: "每日登录积分 +600" })
 
-  const done = createPlugin({ fetchImpl: checkinFetch([600, 600]), sleepImpl: async () => {} })
-  const out2 = await done.auth.checkin(async () => ({ type: "api", key: "k" }))
-  assert.equal(out2.outcome, "done")
+  const unobserved = createPlugin({ fetchImpl: checkinFetch([600, 600]), sleepImpl: async () => {} })
+  const out2 = await unobserved.auth.checkin(async () => ({ type: "api", key: "k" }))
+  // 余额没涨不谎称 done（宿主渲染成「今日已签到」）：inactive + 实情 message。
+  assert.equal(out2.outcome, "inactive")
+  assert.match(out2.message, /未观测到新发放/)
 })
 
 test("check-in propagates dead sessions as signIn expired", async () => {
